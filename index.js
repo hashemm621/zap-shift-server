@@ -12,9 +12,8 @@ const admin = require("firebase-admin");
 const serviceAccount = require(process.env.FIREBASE_ADMIN_KEY);
 
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert(serviceAccount),
 });
-
 
 // generate tracking id
 function generateTrackingId() {
@@ -28,27 +27,22 @@ function generateTrackingId() {
 app.use(express.json());
 app.use(cors());
 
-const verifyFBToken = async(req,res,next) =>{
+const verifyFBToken = async (req, res, next) => {
+  const token = req.headers.authorization;
 
-  const token = req.headers.authorization
-
-  if(!token){
-    return res.status(404).send({message: 'unauthorized access'})
+  if (!token) {
+    return res.status(404).send({ message: "unauthorized access" });
   }
 
   try {
-    const idToken = token.split(' ')[1]
-    const decoded = await admin.auth().verifyIdToken(idToken)
-    req.decoded_email = decoded.email
+    const idToken = token.split(" ")[1];
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    req.decoded_email = decoded.email;
     next();
   } catch (error) {
-    return res.status(401).send({message: 'unauthorized access'})
+    return res.status(401).send({ message: "unauthorized access" });
   }
-
-
-  
-
-}
+};
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@simple-crud-2.ahrgsbv.mongodb.net/?appName=simple-crud-2`;
 
@@ -70,16 +64,24 @@ async function run() {
     const userCollection = db.collection("users");
     const parcelsCollection = db.collection("parcels");
     const paymentCollection = db.collection("payments");
+    const ridersCollection = db.collection("riders");
 
     // user related apis
-    app.post('/users', async(req,res)=>{
-      const user = req.body
-      user.role = 'user'
-      user.createdAt = new Date()
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+      user.role = "user";
+      user.createdAt = new Date();
+      const email = user.email;
 
-      const result = await userCollection.insertOne(user)
-      res.send(result)
-    })
+      const userExists = await userCollection.findOne({ email });
+
+      if (userExists) {
+        return res.send({ message: "user exists" });
+      }
+
+      const result = await userCollection.insertOne(user);
+      res.send(result);
+    });
     // parcels get request
     app.get("/parcels", async (req, res) => {
       const query = {};
@@ -151,14 +153,18 @@ async function run() {
 
     app.patch("/payment-success", async (req, res) => {
       const sessionId = req.query.session_id;
-      const trackingId = generateTrackingId()
+      const trackingId = generateTrackingId();
 
       const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-      const query={transactionId: session.payment_intent}
-      const paymentExist = await paymentCollection.findOne(query)
-      if(paymentExist){
-        return res.send({message: 'already exists', transactionId:session.payment_intent,trackingId: paymentExist.trackingId})
+      const query = { transactionId: session.payment_intent };
+      const paymentExist = await paymentCollection.findOne(query);
+      if (paymentExist) {
+        return res.send({
+          message: "already exists",
+          transactionId: session.payment_intent,
+          trackingId: paymentExist.trackingId,
+        });
       }
       if (session.payment_status === "paid") {
         const id = session.metadata.parcelId;
@@ -166,7 +172,7 @@ async function run() {
         const update = {
           $set: {
             paymentStatus: "paid",
-            trackingId: trackingId
+            trackingId: trackingId,
           },
         };
         const result = await parcelsCollection.updateOne(query, update);
@@ -179,8 +185,8 @@ async function run() {
           parcelName: session.metadata.parcelName,
           transactionId: session.payment_intent,
           paymentStatus: session.payment_status,
-            paidAt: new Date(),
-          trackingId: trackingId
+          paidAt: new Date(),
+          trackingId: trackingId,
         };
         if (session.payment_status === "paid") {
           const resultPayment = await paymentCollection.insertOne(payment);
@@ -188,31 +194,40 @@ async function run() {
             success: true,
             modifyParcel: result,
             paymentInfo: resultPayment,
-            trackingId:trackingId,
+            trackingId: trackingId,
             transactionId: session.payment_intent,
-            
           });
         }
-
       }
     });
 
     // payment related apis
-    app.get('/payments', verifyFBToken, async(req,res)=>{
+    app.get("/payments", verifyFBToken, async (req, res) => {
       const email = req.query.email;
-      const query = {}
-      if(email){
-        query.customerEmail = email
+      const query = {};
+      if (email) {
+        query.customerEmail = email;
 
         // check email address
-        if(email !== req.decoded_email){
-          return res.status(403).send({message: 'forbidden access'})
+        if (email !== req.decoded_email) {
+          return res.status(403).send({ message: "forbidden access" });
         }
       }
-      const cursor = paymentCollection.find(query).sort({paidAt:-1})
-      const result= await cursor.toArray()
-      res.send(result)
-    })
+      const cursor = paymentCollection.find(query).sort({ paidAt: -1 });
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
+    // riders related apis
+    app.post("riders", async (req, res) => {
+      const rider = req.body;
+      rider.status = "pending";
+      rider.createdAt = new Date();
+
+      const result = await ridersCollection.insertOne(rider);
+      res.send(result);
+    });
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
