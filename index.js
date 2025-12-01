@@ -66,7 +66,36 @@ async function run() {
     const paymentCollection = db.collection("payments");
     const ridersCollection = db.collection("riders");
 
+
+    // middle ware with database access
+    const verifyAdmin = async(req,res,next)=>{
+
+      const email = req.decoded_email
+      const query = {email}
+      const user = await userCollection.findOne(query)
+      if(!user || user.role !== 'admin'){
+        return res.status(403).send({message: 'forbidden access'})
+      }
+
+      next()
+    }
     // user related apis
+
+    // get users
+    app.get("/users", verifyFBToken, async (req, res) => {
+      const cursor = userCollection.find();
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
+    app.get("/users/:email/role", async (req, res) => {
+      const email = req.params.email;
+      const query = { email };
+      const user = await userCollection.findOne(query);
+      res.send({ role: user?.role || "user" });
+    });
+
+    //create users
     app.post("/users", async (req, res) => {
       const user = req.body;
       user.role = "user";
@@ -82,6 +111,21 @@ async function run() {
       const result = await userCollection.insertOne(user);
       res.send(result);
     });
+
+    // patch users
+    app.patch("/users/:id/role",verifyFBToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const roleInfo = req.body;
+      const query = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          role: roleInfo.role,
+        },
+      };
+      const result = await userCollection.updateOne(query, updatedDoc);
+      res.send(result);
+    });
+
     // parcels get request
     app.get("/parcels", async (req, res) => {
       const query = {};
@@ -239,7 +283,7 @@ async function run() {
       res.send(result);
     });
 
-    app.patch("/riders/:id", verifyFBToken, async (req, res) => {
+    app.patch("/riders/:id", verifyFBToken, verifyAdmin, async (req, res) => {
       const status = req.body.status;
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
