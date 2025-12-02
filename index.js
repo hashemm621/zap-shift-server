@@ -83,7 +83,16 @@ async function run() {
 
     // get users
     app.get("/users", verifyFBToken, async (req, res) => {
-      const cursor = userCollection.find();
+      const searchText = req.query.searchText
+      const query = {}
+      if(searchText){
+        // query.displayName = {$regex:searchText,$options:'i'}
+        query.$or = [
+          {displayName:{$regex:searchText, $options:'i'}},
+          {email:{$regex:searchText, $options:'i'}},
+        ]
+      }
+      const cursor = userCollection.find(query).sort({createdAt:-1}).limit(5);
       const result = await cursor.toArray();
       res.send(result);
     });
@@ -129,9 +138,12 @@ async function run() {
     // parcels get request
     app.get("/parcels", async (req, res) => {
       const query = {};
-      const { email } = req.query;
+      const { email,deliveryStatus } = req.query;
       if (email) {
         query.senderEmail = email;
+      }
+      if(deliveryStatus){
+        query.deliveryStatus = deliveryStatus
       }
       const options = { sort: { createdAt: -1 } };
       const cursor = parcelsCollection.find(query, options);
@@ -216,6 +228,7 @@ async function run() {
         const update = {
           $set: {
             paymentStatus: "paid",
+            deliveryStatus:'pending-pickup',
             trackingId: trackingId,
           },
         };
@@ -265,11 +278,19 @@ async function run() {
     // riders related apis
 
     app.get("/riders", async (req, res) => {
+      const {status,district,workStatus} = req.query
       const query = {};
-      if (req.query.status) {
-        query.status = req.query.status;
+      if (status) {
+        query.status = status;
       }
-      const cursor = ridersCollection.find(query);
+
+      if(district){
+        query.district = district
+      }
+      if(workStatus){
+        query.workStatus = workStatus
+      }
+      const cursor = ridersCollection.find(query).sort({createdAt:-1});
       const result = await cursor.toArray();
       res.send(result);
     });
@@ -290,6 +311,7 @@ async function run() {
       const updatedDoc = {
         $set: {
           status: status,
+          workStatus:'available'
         },
       };
       const result = await ridersCollection.updateOne(query, updatedDoc);
