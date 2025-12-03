@@ -157,20 +157,23 @@ async function run() {
       res.send(result);
     });
 
-    app.get('/parcels/rider', async(req,res)=>{
-      const {riderEmail,deliveryStatus} = req.query
-      const query = {}
-      if(riderEmail){
-        query.riderEmail = riderEmail
+    app.get("/parcels/rider", async (req, res) => {
+      const { riderEmail, deliveryStatus } = req.query;
+      const query = {};
+      if (riderEmail) {
+        query.riderEmail = riderEmail;
       }
-      if(deliveryStatus){
-        query.deliveryStatus = {$in:["rider_assigned","rider_arriving"]}
+      if (deliveryStatus !== "parcel-delivered") {
+        // query.deliveryStatus = {$in:["rider_assigned","rider_arriving"]}
+        query.deliveryStatus = { $nin: ["parcel-delivered"] };
+      }else{
+        query.deliveryStatus = deliveryStatus
       }
 
-      const cursor = parcelsCollection.find(query).sort({createdAt:-1})
+      const cursor = parcelsCollection.find(query).sort({ createdAt: -1 });
       const result = await cursor.toArray();
-      res.send(result)
-    })
+      res.send(result);
+    });
     // get single parcel
     app.get("/parcels/:id", async (req, res) => {
       const id = req.params.id;
@@ -225,18 +228,31 @@ async function run() {
       res.send(riderResult);
     });
 
-     app.patch('/parcels/:id/status', async(req,res) =>{
-        const {deliveryStatus} = req.body
-        const query = {_id: new ObjectId(req.params.id)}
-        const updatedDoc = {
-          $set:{
-            deliveryStatus: deliveryStatus
-          }
-        }
-        const result = await parcelsCollection.updateOne(query,updatedDoc)
-        res.send(result)
-      })
+    app.patch("/parcels/:id/status", async (req, res) => {
+      const { deliveryStatus,riderId } = req.body;
+      const query = { _id: new ObjectId(req.params.id) };
+      const updatedDoc = {
+        $set: {
+          deliveryStatus: deliveryStatus,
+        },
+      };
 
+      if (deliveryStatus === "parcel-delivered") {
+        // update rider information
+        const riderQuery = { _id: new ObjectId(riderId) };
+        const riderUpdatedDoc = {
+          $set: {
+            workStatus: "available",
+          },
+        };
+        const riderResult = await ridersCollection.updateOne(
+          riderQuery,
+          riderUpdatedDoc
+        );
+      }
+      const result = await parcelsCollection.updateOne(query, updatedDoc);
+      res.send(result);
+    });
 
     //payment api
     app.post("/create-checkout-session", async (req, res) => {
