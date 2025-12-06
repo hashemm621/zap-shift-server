@@ -65,6 +65,7 @@ async function run() {
     const parcelsCollection = db.collection("parcels");
     const paymentCollection = db.collection("payments");
     const ridersCollection = db.collection("riders");
+    const trackingsCollection = db.collection("trackings");
 
     // middle ware with database access
     const verifyAdmin = async (req, res, next) => {
@@ -77,6 +78,19 @@ async function run() {
 
       next();
     };
+
+    // tracking Log
+    const logTracking = async(trackingId, status) =>{
+      const log ={
+        trackingId,
+        status,
+        details: status.split('_').join(' '),
+        createdAt: new Date()
+      }
+      const result = await trackingsCollection.insertOne(log)
+      return result
+    }
+
     // user related apis
 
     // get users
@@ -193,13 +207,17 @@ async function run() {
     // parcels post request
     app.post("/parcels", async (req, res) => {
       const parcel = req.body;
+      const trackingId = generateTrackingId()
       parcel.createdAt = new Date();
+      parcel.trackingId = trackingId
+
+      logTracking(trackingId,'parcel_created')
       const result = await parcelsCollection.insertOne(parcel);
       res.send(result);
     });
 
     app.patch("/parcels/:id", async (req, res) => {
-      const { riderId, riderName, riderEmail } = req.body;
+      const { riderId, riderName, riderEmail, trackingId } = req.body;
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
 
@@ -225,11 +243,12 @@ async function run() {
         riderQuery,
         riderUpdatedDoc
       );
+      logTracking(trackingId,"rider_assigned")
       res.send(riderResult);
     });
 
     app.patch("/parcels/:id/status", async (req, res) => {
-      const { deliveryStatus,riderId } = req.body;
+      const { deliveryStatus,riderId, trackingId } = req.body;
       const query = { _id: new ObjectId(req.params.id) };
       const updatedDoc = {
         $set: {
@@ -251,6 +270,8 @@ async function run() {
         );
       }
       const result = await parcelsCollection.updateOne(query, updatedDoc);
+      // log tracking 
+      logTracking(trackingId, deliveryStatus)
       res.send(result);
     });
 
@@ -278,6 +299,7 @@ async function run() {
         metadata: {
           parcelId: paymentInfo.parcelId,
           parcelName: paymentInfo.parcelName,
+          trackingId:paymentInfo.trackingId
         },
         success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
@@ -286,56 +308,70 @@ async function run() {
       res.send({ url: session.url });
     });
 
-    app.patch("/payment-success", async (req, res) => {
-      const sessionId = req.query.session_id;
-      const trackingId = generateTrackingId();
+app.patch("/payment-success", async (req, res) => {
+  try {
+    const sessionId = req.query.session_id;
 
-      const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-      const query = { transactionId: session.payment_intent };
-      const paymentExist = await paymentCollection.findOne(query);
-      if (paymentExist) {
-        return res.send({
-          message: "already exists",
-          transactionId: session.payment_intent,
-          trackingId: paymentExist.trackingId,
-        });
-      }
-      if (session.payment_status === "paid") {
-        const id = session.metadata.parcelId;
-        const query = { _id: new ObjectId(id) };
-        const update = {
-          $set: {
-            paymentStatus: "paid",
-            deliveryStatus: "pending-pickup",
-            trackingId: trackingId,
-          },
-        };
-        const result = await parcelsCollection.updateOne(query, update);
+    // FIXED: trackingId extract
+    const trackingId = session.metadata.trackingId;
 
-        const payment = {
-          amount: session.amount_total / 100,
-          currency: session.currency,
-          customerEmail: session.customer_email,
-          parcelId: session.metadata.parcelId,
-          parcelName: session.metadata.parcelName,
-          transactionId: session.payment_intent,
-          paymentStatus: session.payment_status,
-          paidAt: new Date(),
-          trackingId: trackingId,
-        };
-        if (session.payment_status === "paid") {
-          const resultPayment = await paymentCollection.insertOne(payment);
-          res.send({
-            success: true,
-            modifyParcel: result,
-            paymentInfo: resultPayment,
-            trackingId: trackingId,
-            transactionId: session.payment_intent,
-          });
-        }
-      }
-    });
+    // check if payment exists
+    const query = { transactionId: session.payment_intent };
+    const paymentExist = await paymentCollection.findOne(query);
+
+    if (paymentExist) {
+      return res.send({
+        message: "already exists",
+        transactionId: session.payment_intent,
+        trackingId: paymentExist.trackingId,
+      });
+    }
+
+    if (session.payment_status === "paid") {
+      const id = session.metadata.parcelId;
+      const parcelQuery = { _id: new ObjectId(id) };
+
+      const update = {
+        $set: {
+          paymentStatus: "paid",
+          deliveryStatus: "pending-pickup",
+        },
+      };
+
+      const result = await parcelsCollection.updateOne(parcelQuery, update);
+
+      const payment = {
+        amount: session.amount_total / 100,
+        currency: session.currency,
+        customerEmail: session.customer_email,
+        parcelId: session.metadata.parcelId,
+        parcelName: session.metadata.parcelName,
+        transactionId: session.payment_intent,
+        paymentStatus: session.payment_status,
+        paidAt: new Date(),
+        trackingId: trackingId,
+      };
+
+      const resultPayment = await paymentCollection.insertOne(payment);
+
+      logTracking(trackingId, "parcel_paid");
+
+      return res.send({
+        success: true,
+        modifyParcel: result,
+        paymentInfo: resultPayment,
+        trackingId: trackingId,
+        transactionId: session.payment_intent,
+      });
+    }
+  } catch (err) {
+    console.log("PAYMENT ERROR:", err);
+    res.status(500).send({ error: "Server crashed", details: err.message });
+  }
+});
+
 
     // payment related apis
     app.get("/payments", verifyFBToken, async (req, res) => {
@@ -409,6 +445,15 @@ async function run() {
       }
       res.send(result);
     });
+
+    // tracking related apis
+
+    app.get('/trackings/:trackingId/logs', async(req,res)=>{
+      const trackingId = req.params.trackingId
+      const query = {trackingId}
+      const result = await trackingsCollection.find(query).sort({createdAt:-1}).toArray()
+      res.send(result)
+    })
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
